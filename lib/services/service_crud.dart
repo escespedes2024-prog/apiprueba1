@@ -2,11 +2,25 @@ import 'package:mysql_client/mysql_client.dart';
 
 import '../models/modelo.dart';
 
+/// CRUD genérico para los modelos de la API.
+///
+/// Es "consciente del esquema": antes de construir cada consulta comprueba
+/// qué columnas existen realmente en la base de datos. Así la API sigue
+/// funcionando aunque la base de datos esté en una versión anterior o
+/// posterior a la definida en los modelos (por ejemplo, mientras se aplican
+/// las migraciones del proyecto Laravel). Las columnas que todavía no existen
+/// simplemente se omiten; cuando se agreguen, aparecerán automáticamente.
 class ServiceCrud {
   final MySQLConnection connection;
   final Modelo modelo;
 
   ServiceCrud(this.connection, this.modelo);
+
+  /// Caché de columnas por tabla (compartida entre instancias/consultas).
+  static final Map<String, Set<String>> _esquemaCache = {};
+
+  /// Caché de claves primarias efectivas por tabla.
+  static final Map<String, List<String>> _clavesCache = {};
 
   List<String> get columnas => modelo.columnas;
 
@@ -23,26 +37,93 @@ class ServiceCrud {
     return resultado.rows.map((fila) => _filaAMapa(fila, nombres)).toList();
   }
 
-  List<String> _seleccion() {
-    final seleccion = modelo.columnasPublicas;
-    if (!modelo.borradoLogico) return seleccion;
-    return [...seleccion, 'deleted_at'];
+  /// Columnas que existen de verdad en [tabla].
+  Future<Set<String>> _columnasDe(String tabla) async {
+    final cache = _esquemaCache[tabla];
+    if (cache != null) return cache;
+
+    final resultado = await connection.execute(
+      'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+      'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tabla',
+      {'tabla': tabla},
+    );
+
+    final columnas = resultado.rows
+        .map((fila) => fila.colAt(0) ?? '')
+        .where((columna) => columna.isNotEmpty)
+        .toSet();
+
+    _esquemaCache[tabla] = columnas;
+    return columnas;
+  }
+
+  /// Claves primarias reales de la tabla. Si las claves declaradas en el
+  /// modelo no existen (por ejemplo `cultos.id` frente a `cultos.id_culto`),
+  /// se detecta la clave primaria real desde MySQL.
+  Future<List<String>> _clavesEfectivas() async {
+    final cache = _clavesCache[modelo.tabla];
+    if (cache != null) return cache;
+
+    final existentes = await _columnasDe(modelo.tabla);
+    final configuradas =
+        modelo.clavesPrimarias.where(existentes.contains).toList();
+
+    if (configuradas.length == modelo.clavesPrimarias.length) {
+      _clavesCache[modelo.tabla] = configuradas;
+      return configuradas;
+    }
+
+    final resultado = await connection.execute(
+      'SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE '
+      "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tabla "
+      "AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION",
+      {'tabla': modelo.tabla},
+    );
+
+    final reales = resultado.rows
+        .map((fila) => fila.colAt(0) ?? '')
+        .where((columna) => columna.isNotEmpty)
+        .toList();
+
+    final claves = reales.isNotEmpty ? reales : configuradas;
+    _clavesCache[modelo.tabla] = claves;
+    return claves;
+  }
+
+  List<String> _seleccion(Set<String> existentes) {
+    final seleccion = modelo.columnasPublicas
+        .where((columna) => existentes.contains(columna))
+        .toList();
+
+    if (modelo.borradoLogico &&
+        existentes.contains('deleted_at') &&
+        !seleccion.contains('deleted_at')) {
+      seleccion.add('deleted_at');
+    }
+
+    // Si el modelo no coincide con ninguna columna real, se devuelve todo
+    // para no romper la consulta.
+    return seleccion.isEmpty ? ['*'] : seleccion;
   }
 
   ({String where, Map<String, dynamic> params}) _condiciones({
     required Map<String, dynamic> filtros,
+    required Set<String> existentes,
     String? busqueda,
     bool incluirEliminados = false,
   }) {
     final condiciones = <String>[];
     final parametros = <String, dynamic>{};
 
-    if (modelo.borradoLogico && !incluirEliminados) {
+    if (modelo.borradoLogico &&
+        !incluirEliminados &&
+        existentes.contains('deleted_at')) {
       condiciones.add('${modelo.tabla}.deleted_at IS NULL');
     }
 
     for (final filtro in filtros.entries) {
       if (!modelo.esColumna(filtro.key)) continue;
+      if (!existentes.contains(filtro.key)) continue;
       if (filtro.value == null) {
         condiciones.add('${filtro.key} IS NULL');
         continue;
@@ -55,11 +136,15 @@ class ServiceCrud {
     if (busqueda != null && busqueda.isNotEmpty && modelo.buscables.isNotEmpty) {
       final criterios = <String>[];
       for (var i = 0; i < modelo.buscables.length; i++) {
+        final columna = modelo.buscables[i];
+        if (!existentes.contains(columna)) continue;
         final alias = 'b$i';
-        criterios.add('${modelo.buscables[i]} LIKE :$alias');
+        criterios.add('$columna LIKE :$alias');
         parametros[alias] = '%$busqueda%';
       }
-      condiciones.add('(${criterios.join(' OR ')})');
+      if (criterios.isNotEmpty) {
+        condiciones.add('(${criterios.join(' OR ')})');
+      }
     }
 
     return (
@@ -68,11 +153,14 @@ class ServiceCrud {
     );
   }
 
-  ({String where, Map<String, dynamic> params}) _whereDeClave(List<String> valores) {
+  ({String where, Map<String, dynamic> params}) _whereDeClave(
+    List<String> valores,
+    List<String> claves,
+  ) {
     final condiciones = <String>[];
     final parametros = <String, dynamic>{};
-    for (var i = 0; i < modelo.clavesPrimarias.length; i++) {
-      condiciones.add('${modelo.clavesPrimarias[i]} = :pk$i');
+    for (var i = 0; i < claves.length && i < valores.length; i++) {
+      condiciones.add('${claves[i]} = :pk$i');
       parametros['pk$i'] = valores[i];
     }
     return (
@@ -90,15 +178,23 @@ class ServiceCrud {
     String direccion = 'asc',
     bool incluirEliminados = false,
   }) async {
+    final existentes = await _columnasDe(modelo.tabla);
+    final seleccion = _seleccion(existentes);
+    final claves = await _clavesEfectivas();
+
     final base = _condiciones(
       filtros: filtros,
+      existentes: existentes,
       busqueda: busqueda,
       incluirEliminados: incluirEliminados,
     );
 
-    final columnaOrden = ordenarPor != null && modelo.esColumna(ordenarPor)
+    final columnaOrden =
+        ordenarPor != null &&
+            modelo.esColumna(ordenarPor) &&
+            existentes.contains(ordenarPor)
         ? ordenarPor
-        : modelo.clavesPrimarias.first;
+        : claves.first;
     final sentido = direccion.toLowerCase() == 'desc' ? 'DESC' : 'ASC';
 
     final parametros = <String, dynamic>{
@@ -108,7 +204,7 @@ class ServiceCrud {
     };
 
     final resultado = await connection.execute('''
-      SELECT ${_seleccion().join(', ')}
+      SELECT ${seleccion.join(', ')}
       FROM ${modelo.tabla}
       ${base.where}
       ORDER BY $columnaOrden $sentido
@@ -125,8 +221,10 @@ class ServiceCrud {
     String? busqueda,
     bool incluirEliminados = false,
   }) async {
+    final existentes = await _columnasDe(modelo.tabla);
     final base = _condiciones(
       filtros: filtros,
+      existentes: existentes,
       busqueda: busqueda,
       incluirEliminados: incluirEliminados,
     );
@@ -142,10 +240,13 @@ class ServiceCrud {
   }
 
   Future<Map<String, dynamic>?> obtenerPorId(List<String> valores) async {
-    final clave = _whereDeClave(valores);
+    final existentes = await _columnasDe(modelo.tabla);
+    final seleccion = _seleccion(existentes);
+    final claves = await _clavesEfectivas();
+    final clave = _whereDeClave(valores, claves);
 
     final resultado = await connection.execute('''
-      SELECT ${_seleccion().join(', ')}
+      SELECT ${seleccion.join(', ')}
       FROM ${modelo.tabla}
       ${clave.where}
       LIMIT 1
@@ -159,7 +260,11 @@ class ServiceCrud {
   }
 
   Future<Map<String, dynamic>?> crear(Map<String, dynamic> cuerpo) async {
-    final datos = modelo.sanear(cuerpo);
+    final existentes = await _columnasDe(modelo.tabla);
+    final datos = <String, dynamic>{
+      for (final entrada in modelo.sanear(cuerpo).entries)
+        if (existentes.contains(entrada.key)) entrada.key: entrada.value,
+    };
     if (datos.isEmpty) return null;
 
     final nombres = datos.keys.toList();
@@ -176,11 +281,14 @@ class ServiceCrud {
     ''', parametros);
 
     if (modelo.tieneClaveCompuesta) {
-      return obtenerPorId(
-        modelo.clavesPrimarias
-            .map((clave) => (cuerpo[clave] ?? datos[clave]).toString())
-            .toList(),
-      );
+      final claves = await _clavesEfectivas();
+      final valores = <String>[];
+      for (final clave in claves) {
+        final valor = cuerpo[clave] ?? datos[clave];
+        if (valor == null) return null;
+        valores.add(valor.toString());
+      }
+      return obtenerPorId(valores);
     }
 
     final id = await _ultimoId();
@@ -192,9 +300,14 @@ class ServiceCrud {
     List<String> valores,
     Map<String, dynamic> cuerpo,
   ) async {
-    final datos = modelo.sanearParaActualizar(cuerpo);
+    final existentes = await _columnasDe(modelo.tabla);
+    final datos = <String, dynamic>{
+      for (final entrada in modelo.sanearParaActualizar(cuerpo).entries)
+        if (existentes.contains(entrada.key)) entrada.key: entrada.value,
+    };
 
-    final clave = _whereDeClave(valores);
+    final claves = await _clavesEfectivas();
+    final clave = _whereDeClave(valores, claves);
     final partes = <String>[];
     final parametros = <String, dynamic>{...clave.params};
     for (var i = 0; i < datos.length; i++) {
@@ -205,7 +318,9 @@ class ServiceCrud {
 
     if (partes.isEmpty) return obtenerPorId(valores);
 
-    if (modelo.borradoLogico && !cuerpo.containsKey('deleted_at')) {
+    if (modelo.borradoLogico &&
+        existentes.contains('deleted_at') &&
+        !cuerpo.containsKey('deleted_at')) {
       partes.add('deleted_at = NULL');
     }
 
@@ -219,10 +334,12 @@ class ServiceCrud {
   }
 
   Future<bool> eliminar(List<String> valores) async {
-    final clave = _whereDeClave(valores);
+    final existentes = await _columnasDe(modelo.tabla);
+    final claves = await _clavesEfectivas();
+    final clave = _whereDeClave(valores, claves);
     final parametros = <String, dynamic>{...clave.params};
 
-    if (modelo.borradoLogico) {
+    if (modelo.borradoLogico && existentes.contains('deleted_at')) {
       final resultado = await connection.execute('''
         UPDATE ${modelo.tabla}
         SET deleted_at = CURRENT_TIMESTAMP
@@ -241,7 +358,11 @@ class ServiceCrud {
   Future<bool> restaurar(List<String> valores) async {
     if (!modelo.borradoLogico) return false;
 
-    final clave = _whereDeClave(valores);
+    final existentes = await _columnasDe(modelo.tabla);
+    if (!existentes.contains('deleted_at')) return false;
+
+    final claves = await _clavesEfectivas();
+    final clave = _whereDeClave(valores, claves);
     final resultado = await connection.execute('''
       UPDATE ${modelo.tabla}
       SET deleted_at = NULL
@@ -261,7 +382,38 @@ class ServiceCrud {
   ) async {
     if (filas.isEmpty) return filas;
 
+    final columnasPrincipales = await _columnasDe(modelo.tabla);
+
     for (final relacion in modelo.relaciones) {
+      // Si la clave foránea no existe en la tabla principal, la relación no
+      // se puede resolver: se devuelve vacía en lugar de romper la consulta.
+      if (!columnasPrincipales.contains(relacion.claveLocal)) {
+        for (final fila in filas) {
+          fila[relacion.alias] = relacion.esUna
+              ? null
+              : <Map<String, dynamic>>[];
+        }
+        continue;
+      }
+
+      final columnasRelacion = await _columnasDe(relacion.tabla);
+      if (columnasRelacion.isEmpty ||
+          !columnasRelacion.contains(relacion.claveRemota)) {
+        for (final fila in filas) {
+          fila[relacion.alias] = relacion.esUna
+              ? null
+              : <Map<String, dynamic>>[];
+        }
+        continue;
+      }
+
+      final columnasSeleccion = relacion.columnas
+          .where(columnasRelacion.contains)
+          .toList();
+      if (columnasSeleccion.isEmpty) {
+        columnasSeleccion.add(relacion.claveRemota);
+      }
+
       final valores = filas
           .map((fila) => fila[relacion.claveLocal]?.toString())
           .whereType<String>()
@@ -272,16 +424,23 @@ class ServiceCrud {
       final indexados = <String, List<Map<String, dynamic>>>{};
 
       if (valores.isNotEmpty) {
-        final marcadores = List.generate(valores.length, (i) => ':r$i').join(', ');
+        final marcadores = List.generate(
+          valores.length,
+          (i) => ':r$i',
+        ).join(', ');
         final parametros = <String, dynamic>{
           for (var i = 0; i < valores.length; i++) 'r$i': valores[i],
         };
 
+        final borradoLogico =
+            relacion.borradoLogico &&
+            columnasRelacion.contains('deleted_at');
+
         final resultado = await connection.execute('''
-          SELECT ${relacion.columnas.join(', ')}, ${relacion.claveRemota} AS __clave
+          SELECT ${columnasSeleccion.join(', ')}, ${relacion.claveRemota} AS __clave
           FROM ${relacion.tabla}
           WHERE ${relacion.claveRemota} IN ($marcadores)
-          ${relacion.borradoLogico ? 'AND deleted_at IS NULL' : ''}
+          ${borradoLogico ? 'AND deleted_at IS NULL' : ''}
         ''', parametros);
 
         for (final fila in _mapaDesde(resultado)) {
@@ -295,7 +454,9 @@ class ServiceCrud {
         final clave = fila[relacion.claveLocal]?.toString();
         final encontrados = clave == null ? null : indexados[clave];
         fila[relacion.alias] = relacion.esUna
-            ? (encontrados == null || encontrados.isEmpty ? null : encontrados.first)
+            ? (encontrados == null || encontrados.isEmpty
+                  ? null
+                  : encontrados.first)
             : (encontrados ?? <Map<String, dynamic>>[]);
       }
     }

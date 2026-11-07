@@ -4,8 +4,12 @@ import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart';
 import 'package:shelf_router/shelf_router.dart';
+import 'package:shelf_swagger_ui/shelf_swagger_ui.dart';
+import 'package:dotenv/dotenv.dart';
 
 import 'package:apiprueba1/database/database.dart';
+import 'package:apiprueba1/docs/openapi.dart';
+import 'package:apiprueba1/docs/recursos_api.dart';
 import 'package:apiprueba1/routes/routes_actividad.dart';
 import 'package:apiprueba1/routes/routes_asistencia_sesion.dart';
 import 'package:apiprueba1/routes/routes_auditoria.dart';
@@ -32,32 +36,10 @@ import 'package:apiprueba1/routes/routes_sesion.dart';
 import 'package:apiprueba1/routes/routes_token_acceso.dart';
 import 'package:apiprueba1/routes/routes_usuario.dart';
 
-const _recursos = <String, String>{
-  'miembros': 'Miembros de la iglesia',
-  'ministerios': 'Ministerios',
-  'docentes': 'Docentes',
-  'actividades': 'Actividades',
-  'seguimientos': 'Seguimiento de actividades',
-  'cursos': 'Cursos biblicos',
-  'sesiones': 'Sesiones de clase',
-  'contratos': 'Contratos',
-  'cultos': 'Cultos',
-  'ingresos': 'Ingresos',
-  'egresos': 'Egresos',
-  'cargos': 'Cargos eclesiasticos',
-  'lideres-iglesia': 'Lideres de la iglesia',
-  'inscripciones': 'Inscripciones a cursos',
-  'pagos-cursos': 'Pagos de cursos',
-  'asistencias': 'Asistencias a sesiones',
-  'registros': 'Registro de asistencia por sesion',
-  'docentes-cursos': 'Asignacion docente-curso',
-  'miembros-ministerios': 'Miembros por ministerio',
-  'usuarios': 'Usuarios del sistema',
-  'roles': 'Roles',
-  'roles-usuarios': 'Roles asignados a usuarios',
-  'perfiles-usuario': 'Perfiles de usuario',
-  'tokens': 'Tokens de acceso personal',
-  'auditorias': 'Auditorias',
+// Recursos expuestos por la API. Se derivan del registro central para que el
+// indice `/api` y la documentacion OpenAPI se mantengan sincronizados.
+final _recursos = <String, String>{
+  for (final recurso in recursosApi) recurso.nombre: recurso.descripcion,
 };
 
 // Cabeceras CORS globales para permitir que la app Flutter web (y otras
@@ -85,15 +67,20 @@ Middleware corsMiddleware() {
 }
 
 Future<void> main(List<String> args) async {
+  // Cargar variables de entorno desde .env
+  final env = DotEnv()..load();
+
   final connection = await Database.connet();
 
-  print('Conectado a MySQL (base de datos: ${Platform.environment['DB_NAME'] ?? 'prueba1'}).');
+  print(
+    'Conectado a MySQL (base de datos: ${Platform.environment['DB_NAME'] ?? 'freedb_ukFLEtIO'}).',
+  );
 
   final router = Router();
 
   router.get('/', (Request request) {
     return Response.ok(
-      'API Dart conectada a la base de datos prueba1\n',
+      'API Dart conectada a la base de datos ${Platform.environment['DB_NAME'] ?? 'freedb_ukFLEtIO'}\n',
       headers: {'Content-Type': 'text/plain; charset=utf-8'},
     );
   });
@@ -102,8 +89,10 @@ Future<void> main(List<String> args) async {
     return Response.ok(
       jsonEncode({
         'nombre': 'API Dart - iadministracion-cursos-biblicos',
-        'base_datos': 'prueba1',
+        'base_datos': Platform.environment['DB_NAME'] ?? 'freedb_ukFLEtIO',
         'recursos': _recursos,
+        'documentacion': '/docs',
+        'openapi': '/api/openapi.json',
         'endpoints': {
           'listar': 'GET /api/{recurso}',
           'obtener': 'GET /api/{recurso}/{id}',
@@ -127,7 +116,7 @@ Future<void> main(List<String> args) async {
       return Response.ok(
         jsonEncode({
           'estado': ok ? 'saludable' : 'degradado',
-          'base_datos': 'prueba1',
+          'base_datos': Platform.environment['DB_NAME'] ?? 'freedb_ukFLEtIO',
           'hora': DateTime.now().toIso8601String(),
         }),
         headers: {
@@ -144,10 +133,39 @@ Future<void> main(List<String> args) async {
     }
   });
 
+  // Documento OpenAPI generado a partir de los modelos de la API.
+  final documentoOpenApi = construirOpenApi();
+  final documentoJson = jsonEncode(documentoOpenApi);
+
+  router.get('/api/openapi.json', (Request request) {
+    return Response.ok(
+      documentoJson,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+      },
+    );
+  });
+
+  final swagger = SwaggerUI(
+    documentoJson,
+    specType: SpecType.json,
+    title: 'API - iadministracion-cursos-biblicos',
+    docExpansion: DocExpansion.list,
+    deepLink: true,
+    persistAuthorization: true,
+  );
+
+  // Swagger UI en /docs (tambien acepta rutas internas como /docs/).
+  router.get('/docs', swagger.call);
+  router.get('/docs/', swagger.call);
+  router.get('/docs/<ruta|.*>', swagger.call);
+
   final routers = <Router>[
     MiembroRoutes(connection),
     MinisterioRoutes(connection),
     DocenteRoutes(connection),
+    DocenteCursoRoutes(connection),
     ActividadRoutes(connection),
     SeguimientoActividadRoutes(connection),
     CursoRoutes(connection),
@@ -160,14 +178,13 @@ Future<void> main(List<String> args) async {
     LiderIglesiaRoutes(connection),
     InscripcionRoutes(connection),
     PagoCursoRoutes(connection),
+    PerfilUsuarioRoutes(connection),
     AsistenciaSesionRoutes(connection),
     RegistraRoutes(connection),
-    DocenteCursoRoutes(connection),
     MiembroMinisterioRoutes(connection),
     UsuarioRoutes(connection),
     RolRoutes(connection),
     RolUsuarioRoutes(connection),
-    PerfilUsuarioRoutes(connection),
     TokenAccesoRoutes(connection),
     AuditoriaRoutes(connection),
   ];
@@ -197,6 +214,13 @@ Future<void> main(List<String> args) async {
 
   final server = await serve(handler, ip, port);
 
-  print('Servidor ejecutandose en http://${server.address.host}:${server.port}');
-  print('Recursos disponibles en http://${server.address.host}:${server.port}/api');
+  print(
+    'Servidor ejecutandose en http://${server.address.host}:${server.port}',
+  );
+  print(
+    'Recursos disponibles en http://${server.address.host}:${server.port}/api',
+  );
+  print(
+    'Documentacion Swagger en http://${server.address.host}:${server.port}/docs',
+  );
 }

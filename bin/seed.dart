@@ -6,7 +6,6 @@ import 'package:apiprueba1/database/seeders/cargo_seeder.dart';
 import 'package:apiprueba1/database/seeders/contrato_seeder.dart';
 import 'package:apiprueba1/database/seeders/culto_seeder.dart';
 import 'package:apiprueba1/database/seeders/curso_seeder.dart';
-import 'package:apiprueba1/database/seeders/docente_curso_seeder.dart';
 import 'package:apiprueba1/database/seeders/docente_seeder.dart';
 import 'package:apiprueba1/database/seeders/egreso_seeder.dart';
 import 'package:apiprueba1/database/seeders/ingreso_seeder.dart';
@@ -22,7 +21,6 @@ import 'package:apiprueba1/database/seeders/rol_seeder.dart';
 import 'package:apiprueba1/database/seeders/rol_usuario_seeder.dart';
 import 'package:apiprueba1/database/seeders/seguimiento_actividad_seeder.dart';
 import 'package:apiprueba1/database/seeders/sesion_seeder.dart';
-import 'package:apiprueba1/database/seeders/user_profile_seeder.dart';
 import 'package:apiprueba1/database/seeders/usuario_seeder.dart';
 import 'package:mysql_client/mysql_client.dart';
 
@@ -81,7 +79,6 @@ Future<void> _runAll(MySQLConnection connection, String? passwordHash) async {
   await DocenteSeeder.run(connection);
   await CursoSeeder.run(connection);
   await SesionSeeder.run(connection);
-  await DocenteCursoSeeder.run(connection);
   await ActividadSeeder.run(connection);
   await SeguimientoActividadSeeder.run(connection);
   await LiderIglesiaSeeder.run(connection);
@@ -95,7 +92,6 @@ Future<void> _runAll(MySQLConnection connection, String? passwordHash) async {
   await AsistenciaSesionSeeder.run(connection);
   await MiembroMinisterioSeeder.run(connection);
   await AuditoriaSeeder.runSimple(connection);
-  await UserProfileSeeder.run(connection);
   await RolUsuarioSeeder.run(connection);
   await PersonalAccessTokenSeeder.run(connection);
 }
@@ -129,9 +125,6 @@ Future<void> _runSpecific(
       break;
     case 'SesionSeeder':
       await SesionSeeder.run(connection);
-      break;
-    case 'DocenteCursoSeeder':
-      await DocenteCursoSeeder.run(connection);
       break;
     case 'ActividadSeeder':
       await ActividadSeeder.run(connection);
@@ -171,10 +164,6 @@ Future<void> _runSpecific(
       break;
     case 'AuditoriaSeeder':
       await AuditoriaSeeder.runSimple(connection);
-      break;
-    case 'UserProfileSeeder':
-    case 'UsuarioPerfilSeeder':
-      await UserProfileSeeder.run(connection);
       break;
     case 'RolUsuarioSeeder':
       await RolUsuarioSeeder.run(connection);

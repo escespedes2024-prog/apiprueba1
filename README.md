@@ -3,6 +3,22 @@ configured to enable running with [Docker](https://www.docker.com/).
 
 This sample code handles HTTP GET requests to `/` and `/echo/<message>`
 
+# Documentacion de la API (Swagger)
+
+La API genera un documento OpenAPI 3.0 a partir de los modelos declarados en
+`lib/models`, por lo que la documentacion se mantiene sincronizada con las
+columnas, claves y relaciones de cada tabla.
+
+Con el servidor en ejecucion:
+
+- Swagger UI: <http://localhost:8080/docs>
+- Especificacion OpenAPI (JSON): <http://localhost:8080/api/openapi.json>
+- Indice de recursos: <http://localhost:8080/api>
+
+Los recursos que aparecen en Swagger se registran en
+`lib/docs/recursos_api.dart`. Para documentar un recurso nuevo, agrega su modelo
+a esa lista y crea las rutas correspondientes.
+
 # Running the sample
 
 ## Running with the Dart SDK
