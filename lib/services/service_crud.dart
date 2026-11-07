@@ -90,10 +90,19 @@ class ServiceCrud {
     return claves;
   }
 
-  List<String> _seleccion(Set<String> existentes) {
+  List<String> _seleccion(Set<String> existentes, List<String> claves) {
     final seleccion = modelo.columnasPublicas
         .where((columna) => existentes.contains(columna))
         .toList();
+
+    // La clave primaria real debe devolverse siempre, aunque el modelo declare
+    // otro nombre (p. ej. `cultos.id_culto` frente a `cultos.id`). Sin ella el
+    // cliente no puede identificar la fila para actualizarla o borrarla.
+    for (final clave in claves) {
+      if (existentes.contains(clave) && !seleccion.contains(clave)) {
+        seleccion.add(clave);
+      }
+    }
 
     if (modelo.borradoLogico &&
         existentes.contains('deleted_at') &&
@@ -179,8 +188,8 @@ class ServiceCrud {
     bool incluirEliminados = false,
   }) async {
     final existentes = await _columnasDe(modelo.tabla);
-    final seleccion = _seleccion(existentes);
     final claves = await _clavesEfectivas();
+    final seleccion = _seleccion(existentes, claves);
 
     final base = _condiciones(
       filtros: filtros,
@@ -241,8 +250,8 @@ class ServiceCrud {
 
   Future<Map<String, dynamic>?> obtenerPorId(List<String> valores) async {
     final existentes = await _columnasDe(modelo.tabla);
-    final seleccion = _seleccion(existentes);
     final claves = await _clavesEfectivas();
+    final seleccion = _seleccion(existentes, claves);
     final clave = _whereDeClave(valores, claves);
 
     final resultado = await connection.execute('''
