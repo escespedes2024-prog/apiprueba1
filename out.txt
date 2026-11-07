@@ -1,0 +1,9 @@
+Conectado a MySQL (base de datos: prueba1).
+Servidor ejecutandose en http://0.0.0.0:8080
+Recursos disponibles en http://0.0.0.0:8080/api
+2026-10-06T16:22:06.712807  0:00:00.009629 GET     [200] /api
+2026-10-06T16:22:12.360364  0:00:00.000537 GET     [200] /api
+2026-10-06T16:22:18.952208  0:00:00.000448 GET     [200] /api
+2026-10-06T16:22:29.279325  0:00:00.055144 GET     [200] /api/miembros
+2026-10-06T16:22:48.093225  0:00:00.031317 GET     [200] /api/cursos
+2026-10-06T16:24:17.310200  0:00:00.002951 GET     [200] /api/salud

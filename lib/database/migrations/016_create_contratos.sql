@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS contratos (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    id_miembro BIGINT UNSIGNED NOT NULL,
+    id_lider_iglesia BIGINT UNSIGNED NULL,
+    tipo_compensacion VARCHAR(255) NOT NULL DEFAULT 'Salario',
+    salario DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    descripcion TEXT NULL,
+    fecha_inicio DATE NOT NULL,
+    fecha_fin DATE NULL,
+    activo TINYINT(1) NOT NULL DEFAULT 1,
+    monto DECIMAL(10,2) NULL,
+    estado ENUM('activo', 'finalizado', 'cancelado') NOT NULL DEFAULT 'activo',
+    created_at TIMESTAMP NULL,
+    updated_at TIMESTAMP NULL,
+    deleted_at TIMESTAMP NULL,
+    INDEX contratos_id_miembro_foreign (id_miembro),
+    INDEX contratos_id_lider_iglesia_foreign (id_lider_iglesia),
+    CONSTRAINT contratos_id_miembro_foreign FOREIGN KEY (id_miembro) REFERENCES miembros (id) ON DELETE CASCADE,
+    CONSTRAINT contratos_id_lider_iglesia_foreign FOREIGN KEY (id_lider_iglesia) REFERENCES lideres_iglesia (id) ON DELETE SET NULL
+);
